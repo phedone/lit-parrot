@@ -13,6 +13,10 @@ from lit_parrot import Parrot, Tokenizer, Config
 from lit_parrot.utils import EmptyInitOnDevice, lazy_load, check_valid_checkpoint_dir
 
 
+healing_mask: Optional[torch.Tensor] = None
+healing: bool = False
+
+
 @torch.no_grad()
 def generate(
     model: Parrot,
@@ -60,6 +64,8 @@ def generate(
         # forward
         logits = model(idx.view(1, -1), max_seq_length, input_pos)
         logits = logits[0, -1] / temperature
+        if healing_mask is not None:
+            logits = logits + healing_mask
 
         # optionally crop the logits to only the top k options
         if top_k is not None:
@@ -99,8 +105,9 @@ def main(
     *,
     top_k: int = 200,
     temperature: float = 0.8,
-    checkpoint_dir: Path = Path(f"checkpoints/stabilityai/stablelm-tuned-alpha-3b"),
+    checkpoint_dir: Path = Path(f"checkpoints/EleutherAI/pythia-70m"),
     quantize: Optional[str] = None,
+    token_healing: bool = True,
 ) -> None:
     """Starts a conversation with a tuned Parrot model.
 
@@ -112,6 +119,7 @@ def main(
         quantize: Whether to quantize the model and using which method:
             ``"llm.int8"``: LLM.int8() mode,
             ``"gptq.int4"``: GPTQ 4-bit mode.
+        token_healing: Whether to apply https://github.com/microsoft/guidance/blob/main/notebooks/token_healing.ipynb
     """
     check_valid_checkpoint_dir(checkpoint_dir)
 
@@ -134,6 +142,11 @@ def main(
     tokenizer = Tokenizer(checkpoint_dir / "tokenizer.json", checkpoint_dir / "tokenizer_config.json")
     system_prompt, stop_tokens = prompt_config(checkpoint_dir, tokenizer)
 
+    if token_healing:
+        import pygtrie
+
+        prefix_map = pygtrie.CharTrie(tokenizer.processor.get_vocab(with_added_tokens=False))
+
     while True:
         try:
             prompt = input(">> Prompt: ")
@@ -151,15 +164,31 @@ def main(
             top_k=top_k,
             stop_tokens=stop_tokens,
         )
-        model.reset_cache()
         print(">> Reply: ", end="")
         try:
             tokens_generated = 0
             t0 = time.perf_counter()
-            for token in y:
-                print(tokenizer.decode(token), end="", flush=True)
+            for token_id in y:
+                token = tokenizer.decode(token_id)
+                global healing_mask
+                if token_healing:
+                    try:
+                        tokens_prefixed_by_token = [v for v in prefix_map.values(prefix=token) if v != token_id]
+                    except KeyError:
+                        tokens_prefixed_by_token = []
+                    if len(tokens_prefixed_by_token) > 1:
+                        tokens_prefixed_by_token = torch.tensor(tokens_prefixed_by_token, device=fabric.device)
+                        healing_mask = torch.zeros(config.vocab_size, device=fabric.device)
+                        # increase the signal for the tokens that are prefixed by the previous generation
+                        healing_mask = torch.index_fill(healing_mask, 0, tokens_prefixed_by_token, 50.0)
+                    else:
+                        healing_mask = None
+                        print(token, end="", flush=True)
+                else:
+                    print(token, end="", flush=True)
                 tokens_generated += 1
             t = time.perf_counter() - t0
+            model.reset_cache()
             print(f"\nTime for inference: {t:.02f} sec total, {tokens_generated / t:.02f} tokens/sec", file=sys.stderr)
         except KeyboardInterrupt:
             # support stopping generation
