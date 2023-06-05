@@ -53,3 +53,13 @@ python generate.py --quantize gptq.int4
 
 For instance, `falcon-40b` "only" requires ~24 GB to generate using this technique, otherwise more than +40GB are required. On an A100 it takes 1 token/sec.
 However, ~32 GB were required during the conversion step.
+
+
+## Run multiple times after warming model up
+
+```python
+# Load the model, you can use quantization & int8, check the docstrings
+model, tokenizer = generate.warm_then_infere.load_model()
+# Infere
+result_string = generate.warm_then_infere.infere("The secret to happiness is",max_new_tokens= 400, temperature= 0.2)
+```
