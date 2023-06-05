@@ -76,3 +76,13 @@ python generate/base.py --checkpoint_dir checkpoints/tiiuae/falcon-40b --strateg
 
 taking 13 GB of memory but running at 0.12 tokens/sec on 2 A100 40GB GPUs.
 Smaller devices like 3090s (24 GB) can also fit it with this technique.
+
+
+## Run multiple times after warming model up
+
+```python
+# Load the model, you can use quantization & int8, check the docstrings
+model, tokenizer = generate.warm_then_infere.load_model()
+# Infere
+result_string = generate.warm_then_infere.infere("The secret to happiness is",max_new_tokens= 400, temperature= 0.2)
+```
